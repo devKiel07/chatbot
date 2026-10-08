@@ -14,7 +14,7 @@
   .logo{width:40px;height:40px;border-radius:50%;background:var(--acc);color:#fff;display:grid;place-items:center;font-weight:700;font-size:20px}
   header h1{font-size:18px;margin:0}
   header p{margin:0;font-size:13px;color:var(--mute)}
-  header button{margin-left:auto}
+  header #hbtn{margin-left:auto}
   .ghost{background:none;border:1px solid var(--line);color:var(--mute);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
   #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
   .m{max-width:90%;padding:10px 14px;border-radius:18px;word-wrap:break-word}
@@ -44,6 +44,17 @@
   textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
   #go{background:var(--acc);color:#fff;border:0;border-radius:50%;width:44px;height:44px;font-size:18px;cursor:pointer}
   #go:disabled{opacity:.5}
+  #app{position:relative}
+  #hist{position:absolute;inset:0;z-index:5;background:var(--bg);display:flex;flex-direction:column}
+  #hist[hidden]{display:none}
+  #hist .top{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  #hist .top h2{margin:0;font-size:18px;flex:1}
+  #hl{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+  .hrow{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:var(--card)}
+  .hrow.on{border-color:var(--acc)}
+  .htitle{flex:1;text-align:left;background:none;border:0;padding:4px;cursor:pointer;color:var(--ink);font:inherit;min-width:0}
+  .htitle b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hnote{padding:8px 16px;font-size:12px;color:var(--mute);border-top:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -51,8 +62,18 @@
   <header>
     <div class="logo">K</div>
     <div><h1>Kofi</h1><p>Problems, code, languages and live info</p></div>
+    <button class="ghost" id="hbtn" type="button">History</button>
     <button class="ghost" id="clr" type="button">New chat</button>
   </header>
+  <section id="hist" hidden aria-label="Chat history">
+    <div class="top">
+      <h2>Chat history</h2>
+      <button class="ghost" id="hclear" type="button">Clear all</button>
+      <button class="ghost" id="hclose" type="button">Close</button>
+    </div>
+    <div id="hl"></div>
+    <div class="hnote">Chats are saved only in this browser on this device. Don't use history on a shared computer.</div>
+  </section>
   <div id="log"></div>
   <form id="f">
     <textarea id="t" rows="1" placeholder="Ask Kofi anything..."></textarea>
@@ -206,7 +227,7 @@
     t.value = ""; t.style.height = "auto";
     busy = true; go.disabled = true;
     const bubble = add("k", "Kofi is thinking…");
-    let msgs = history.slice(-20);
+    let msgs = history.slice(-20).map(m => ({ role: m.role, content: m.content }));
     while (msgs.length && msgs[0].role !== "user") msgs.shift();
     try {
       const res = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: msgs }) });
@@ -215,7 +236,8 @@
       bubble.textContent = "";
       renderText(bubble, data.reply || "");
       renderCards(bubble, data.cards);
-      history.push({ role: "assistant", content: data.reply || "(card shown)" });
+      history.push({ role: "assistant", content: data.reply || "(card shown)", cards: data.cards || [] });
+      saveCur();
     } catch (err) {
       bubble.textContent = "Sorry, something went wrong: " + err.message;
       history.pop();
@@ -224,7 +246,60 @@
     busy = false; go.disabled = false; t.focus();
   }
 
-  function reset() { history = []; log.textContent = ""; add("k", "Hey, I'm Kofi! 👋 Ask me about anything: problems, code, languages, weather or live info. I can show charts and cards too."); }
+  // ---------- saved chats (stored in this browser only) ----------
+  const KEY = "kofi_chats";
+  let chats = [], cur = null;
+  try { chats = JSON.parse(localStorage.getItem(KEY) || "[]"); if (!Array.isArray(chats)) chats = []; } catch (e) { chats = []; }
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(chats.slice(0, 30))); } catch (e) {} }
+
+  function saveCur() {
+    if (!cur || !cur.msgs.length) return;
+    const first = cur.msgs.find(m => m.role === "user");
+    cur.title = first ? first.content.slice(0, 50) : "New chat";
+    cur.updated = Date.now();
+    chats = [cur, ...chats.filter(c => c.id !== cur.id)].slice(0, 30);
+    persist();
+  }
+
+  function reset() {
+    cur = { id: Date.now().toString(36), title: "New chat", updated: Date.now(), msgs: [] };
+    history = cur.msgs;
+    log.textContent = "";
+    add("k", "Hey, I'm Kofi! 👋 Ask me about anything: problems, code, languages, weather or live info. I can show charts and cards too.");
+  }
+
+  function openChat(id) {
+    const c = chats.find(x => x.id === id);
+    if (!c) return;
+    cur = c; history = c.msgs; log.textContent = "";
+    history.forEach(m => {
+      if (m.role === "user") add("u", m.content);
+      else { const b = add("k"); renderText(b, m.content === "(card shown)" ? "" : m.content); renderCards(b, m.cards); }
+    });
+    showHist(false);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function drawHist() {
+    const list = document.getElementById("hl");
+    list.textContent = "";
+    if (!chats.length) { list.appendChild(el("div", "sub", "No saved chats yet. Talk to Kofi and your chats will show up here.")); return; }
+    chats.forEach(c => {
+      const r = el("div", "hrow" + (cur && c.id === cur.id ? " on" : ""));
+      const b = el("button", "htitle"); b.type = "button";
+      b.appendChild(el("b", "", c.title));
+      b.appendChild(el("span", "sub", new Date(c.updated).toLocaleString()));
+      b.onclick = () => openChat(c.id);
+      const d = el("button", "ghost", "Delete"); d.type = "button";
+      d.onclick = () => { chats = chats.filter(x => x.id !== c.id); persist(); if (cur && cur.id === c.id) reset(); drawHist(); };
+      r.appendChild(b); r.appendChild(d); list.appendChild(r);
+    });
+  }
+
+  function showHist(on) { document.getElementById("hist").hidden = !on; if (on) drawHist(); }
+  document.getElementById("hbtn").onclick = () => showHist(true);
+  document.getElementById("hclose").onclick = () => showHist(false);
+  document.getElementById("hclear").onclick = () => { if (confirm("Delete all saved chats?")) { chats = []; persist(); reset(); drawHist(); } };
 
   document.getElementById("f").addEventListener("submit", e => { e.preventDefault(); send(t.value); });
   t.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(t.value); } });
